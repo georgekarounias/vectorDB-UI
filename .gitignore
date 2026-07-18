@@ -1,0 +1,12 @@
+# Workspace files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# React app
+app/node_modules/
+app/dist/
+app/dist-ssr/
+app/*.local
