@@ -1,0 +1,4 @@
+Icon file: vectorBD-UI.ico
+Source: https://icon.horse/icon/qdrant.tech
+License: Not provided by the source endpoint
+Notes: Downloaded from a public vector database site icon endpoint and wrapped into a Windows .ico file for local use.

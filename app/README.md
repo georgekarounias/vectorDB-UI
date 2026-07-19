@@ -22,6 +22,22 @@ npm run dev
 - Vite frontend on `http://localhost:5173`
 - Local API server on `http://localhost:8787`
 
+## Run with Docker
+
+Build the image from the workspace root:
+
+```bash
+docker build -t vector-db-ui .
+```
+
+Run the container and expose the app on port `8787`:
+
+```bash
+docker run --rm -p 8787:8787 vector-db-ui
+```
+
+The container serves both the React UI and the API from `http://localhost:8787`.
+
 ## Authentication
 
 Keep provider credentials on the server, not in the browser.
