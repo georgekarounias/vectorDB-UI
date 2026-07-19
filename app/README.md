@@ -4,10 +4,11 @@ This app uses a small local backend to load live data from an actual vector data
 
 ## Supported providers
 
+- Pgvector
 - Qdrant
 - Weaviate
 
-The backend detects the provider from the URL you enter in the UI and normalizes the returned collections and record previews into one grid shape.
+The backend detects the provider from the URL or connection string you enter in the UI and normalizes the returned collections and record previews into one grid shape.
 
 ## Run locally
 
@@ -30,11 +31,15 @@ Set one of these environment variables before starting the app when your provide
 - `QDRANT_API_KEY`
 - `WEAVIATE_API_KEY`
 
-If you are connecting to a local or open instance, you may not need either variable.
+For pgvector, authentication is provided in the PostgreSQL connection string itself, for example:
+
+- `postgresql://user:password@localhost:5432/my_database`
+
+If you are connecting to a local or open Qdrant or Weaviate instance, you may not need either environment variable.
 
 ## Current behavior
 
-- The top URL box loads live collections and record previews.
+- The top input accepts either a provider URL or a PostgreSQL connection string.
 - The grid filters run on the records loaded from the provider response.
 - The backend currently samples up to `40` records per collection by default.
 

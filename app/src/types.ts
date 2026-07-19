@@ -1,6 +1,10 @@
-export type ProviderName = "Weaviate" | "Azure AI Search" | "Pinecone";
+export type ProviderName =
+  | "Weaviate"
+  | "Azure AI Search"
+  | "Pinecone"
+  | "Pgvector";
 
-export type ProviderKind = "Qdrant" | "Weaviate";
+export type ProviderKind = "Pgvector" | "Qdrant" | "Weaviate";
 
 export type ConnectionStatus =
   | "Healthy"

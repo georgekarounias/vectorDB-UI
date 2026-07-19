@@ -555,7 +555,9 @@ function App() {
     event.preventDefault();
 
     if (!databaseUrl.trim()) {
-      setErrorMessage("Enter a vector database URL first.");
+      setErrorMessage(
+        "Enter a vector database URL or PostgreSQL connection string first.",
+      );
       return;
     }
 
@@ -794,12 +796,12 @@ function App() {
     <div className="app-shell">
       <form className="top-bar panel" onSubmit={handleConnect}>
         <label className="field url-field">
-          <span>Vector database URL</span>
+          <span>Vector database URL or connection string</span>
           <input
-            type="url"
+            type="text"
             value={databaseUrl}
             onChange={(event) => setDatabaseUrl(event.target.value)}
-            placeholder="http://localhost:6333 or http://localhost:8080"
+            placeholder="http://localhost:6333 or postgresql://user:password@host:5432/db"
           />
         </label>
         <button
@@ -1149,11 +1151,11 @@ function App() {
           </>
         ) : (
           <div className="empty-state">
-            <h1>Enter a vector database URL</h1>
+            <h1>Enter a vector database URL or connection string</h1>
             <p>
-              After you load a URL, the app calls a local backend that detects
-              the provider and loads live collections plus record previews from
-              the actual vector database.
+              After you load a provider URL or PostgreSQL connection string, the
+              app calls a local backend that detects the provider and loads live
+              collections plus record previews from the actual vector database.
             </p>
           </div>
         )}

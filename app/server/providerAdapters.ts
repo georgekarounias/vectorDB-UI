@@ -1,3 +1,4 @@
+import { Client } from "pg";
 import type {
   ExplorerRecord,
   ExplorerResponse,
@@ -10,6 +11,25 @@ const RECORDS_PER_COLLECTION = Number(
   process.env.VECTOR_UI_SAMPLE_PER_COLLECTION ?? "40",
 );
 const MAX_ENUM_OPTIONS = 18;
+const PGVECTOR_TYPE_NAMES = ["vector", "halfvec", "sparsevec"];
+const PGVECTOR_ID_KEYS = [
+  "id",
+  "uuid",
+  "recordId",
+  "chunkId",
+  "documentId",
+  "itemId",
+  "sourceId",
+];
+const PGVECTOR_SCOPE_KEYS = [
+  "scope",
+  "tenant",
+  "namespace",
+  "projectId",
+  "project_id",
+  "customerId",
+  "customer_id",
+];
 
 const WEAVIATE_PRIMITIVE_TYPES = new Set([
   "text",
@@ -96,10 +116,41 @@ type WeaviateTenantListResponse = Array<{
   name?: string;
 }>;
 
+type PgvectorExtensionRow = {
+  extversion: string;
+};
+
+type PgvectorColumnRow = {
+  schema_name: string;
+  table_name: string;
+  vector_column: string;
+  vector_type_name: string;
+  vector_type: string;
+};
+
+type PgvectorSampleRow = {
+  row_pointer: string;
+  payload: Record<string, unknown> | null;
+};
+
+type PgvectorTableInfo = {
+  schemaName: string;
+  tableName: string;
+  vectorColumns: string[];
+  vectorTypeNames: string[];
+  vectorTypes: string[];
+  dimensions: Array<number | null>;
+};
+
 export async function inspectVectorDatabase(
   databaseUrl: string,
 ): Promise<ExplorerResponse> {
   const normalizedUrl = normalizeDatabaseUrl(databaseUrl);
+
+  if (isPgvectorConnectionString(normalizedUrl)) {
+    return inspectPgvector(normalizedUrl);
+  }
+
   const failures: string[] = [];
 
   try {
@@ -125,11 +176,163 @@ function normalizeDatabaseUrl(databaseUrl: string) {
   try {
     parsedUrl = new URL(databaseUrl);
   } catch {
-    throw new Error("Enter a valid vector database URL.");
+    throw new Error(
+      "Enter a valid vector database URL or PostgreSQL connection string.",
+    );
+  }
+
+  if (isPgvectorProtocol(parsedUrl.protocol)) {
+    return parsedUrl.toString();
   }
 
   parsedUrl.pathname = parsedUrl.pathname.replace(/\/+$/, "");
   return parsedUrl.toString().replace(/\/+$/, "");
+}
+
+function isPgvectorProtocol(protocol: string) {
+  return protocol === "postgres:" || protocol === "postgresql:";
+}
+
+function isPgvectorConnectionString(databaseUrl: string) {
+  return isPgvectorProtocol(new URL(databaseUrl).protocol);
+}
+
+async function inspectPgvector(databaseUrl: string): Promise<ExplorerResponse> {
+  const client = new Client({
+    connectionString: databaseUrl,
+  });
+
+  let isConnected = false;
+
+  try {
+    await client.connect();
+    isConnected = true;
+
+    const extensionVersion = await getPgvectorExtensionVersion(client);
+    const pgvectorColumns = await listPgvectorColumns(client);
+
+    if (!pgvectorColumns.length) {
+      if (!extensionVersion) {
+        throw new Error(
+          "This PostgreSQL database does not have the pgvector extension installed.",
+        );
+      }
+
+      throw new Error(
+        "The PostgreSQL database has pgvector installed, but no vector-bearing tables were found.",
+      );
+    }
+
+    const discoveredTables = groupPgvectorColumns(pgvectorColumns);
+    const tableInfos = discoveredTables.slice(0, MAX_COLLECTIONS);
+    const records: ExplorerRecord[] = [];
+    const warnings = [
+      `Loaded up to ${RECORDS_PER_COLLECTION} rows per table from the live pgvector database.`,
+      "PostgreSQL authentication is handled through the connection string itself.",
+      extensionVersion
+        ? `Detected pgvector extension version ${extensionVersion}.`
+        : "Detected vector-bearing tables through PostgreSQL system catalogs.",
+    ];
+
+    if (discoveredTables.length > tableInfos.length) {
+      warnings.push(
+        `Showing the first ${tableInfos.length} pgvector tables out of ${discoveredTables.length} discovered tables.`,
+      );
+    }
+
+    for (const tableInfo of tableInfos) {
+      const collectionLabel = getPgvectorCollectionLabel(
+        tableInfo.schemaName,
+        tableInfo.tableName,
+      );
+      const primaryVectorColumn = tableInfo.vectorColumns[0] ?? "embedding";
+      const primaryVectorType = tableInfo.vectorTypes[0] ?? "vector";
+      const primaryDimensions = tableInfo.dimensions[0] ?? 0;
+      const sampleRows = await listPgvectorSampleRows(client, tableInfo);
+
+      if (tableInfo.vectorColumns.length > 1) {
+        warnings.push(
+          `Table ${collectionLabel} has ${tableInfo.vectorColumns.length} vector columns; the explorer samples shared rows and summarizes the first vector column in the grid.`,
+        );
+      }
+
+      if (!sampleRows.length) {
+        warnings.push(
+          `Table ${collectionLabel} contains vector columns but no sample rows were returned.`,
+        );
+        continue;
+      }
+
+      for (const [rowIndex, row] of sampleRows.entries()) {
+        const payload = isPlainObject(row.payload) ? row.payload : {};
+        const enrichedPayload = createPgvectorPayload(
+          payload,
+          row.row_pointer,
+          tableInfo,
+          primaryVectorColumn,
+          primaryVectorType,
+          primaryDimensions,
+        );
+        const recordId = getPgvectorRecordId(
+          enrichedPayload,
+          row.row_pointer,
+          collectionLabel,
+          rowIndex + 1,
+        );
+
+        records.push(
+          createRecordFromPayload({
+            collectionId: collectionLabel,
+            collectionLabel,
+            recordId,
+            payload: enrichedPayload,
+            scope: getPgvectorScope(enrichedPayload, tableInfo.schemaName),
+            vector: {
+              dimensions: primaryDimensions,
+              metric: "Unknown",
+              model: primaryVectorColumn,
+            },
+            createdAt:
+              findTimestamp(enrichedPayload, [
+                "createdAt",
+                "created_at",
+                "insertedAt",
+                "inserted_at",
+              ]) ?? "",
+            updatedAt:
+              findTimestamp(enrichedPayload, [
+                "updatedAt",
+                "updated_at",
+                "modifiedAt",
+                "modified_at",
+                "lastUpdatedAt",
+                "last_updated_at",
+                "createdAt",
+                "created_at",
+              ]) ?? "",
+          }),
+        );
+      }
+    }
+
+    return {
+      provider: "Pgvector",
+      databaseUrl,
+      fields: buildFieldSchema(records),
+      records,
+      warnings,
+      sampleLimitPerCollection: RECORDS_PER_COLLECTION,
+      collectionCount: tableInfos.length,
+    };
+  } catch (error) {
+    throw new Error(`Unable to inspect pgvector data: ${getErrorMessage(error)}`, {
+      cause: error,
+    });
+  } finally {
+    if (isConnected) {
+      await client.end();
+    }
+  }
 }
 
 async function inspectQdrant(databaseUrl: string): Promise<ExplorerResponse> {
@@ -362,6 +565,149 @@ async function inspectWeaviate(databaseUrl: string): Promise<ExplorerResponse> {
     sampleLimitPerCollection: RECORDS_PER_COLLECTION,
     collectionCount: classes.length,
   };
+}
+
+async function getPgvectorExtensionVersion(client: Client) {
+  const result = await client.query<PgvectorExtensionRow>(
+    "SELECT extversion FROM pg_extension WHERE extname = 'vector' LIMIT 1",
+  );
+
+  return result.rows[0]?.extversion ?? null;
+}
+
+async function listPgvectorColumns(client: Client) {
+  const result = await client.query<PgvectorColumnRow>(
+    `SELECT
+        n.nspname AS schema_name,
+        c.relname AS table_name,
+        a.attname AS vector_column,
+        t.typname AS vector_type_name,
+        format_type(a.atttypid, a.atttypmod) AS vector_type
+      FROM pg_attribute AS a
+      JOIN pg_class AS c ON c.oid = a.attrelid
+      JOIN pg_namespace AS n ON n.oid = c.relnamespace
+      JOIN pg_type AS t ON t.oid = a.atttypid
+      WHERE c.relkind IN ('r', 'p')
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND a.attnum > 0
+        AND NOT a.attisdropped
+        AND t.typname = ANY($1::text[])
+      ORDER BY n.nspname, c.relname, a.attnum`,
+    [PGVECTOR_TYPE_NAMES],
+  );
+
+  return result.rows;
+}
+
+function groupPgvectorColumns(rows: PgvectorColumnRow[]) {
+  const tables = new Map<string, PgvectorTableInfo>();
+
+  for (const row of rows) {
+    const key = `${row.schema_name}.${row.table_name}`;
+    const currentTable = tables.get(key) ?? {
+      schemaName: row.schema_name,
+      tableName: row.table_name,
+      vectorColumns: [],
+      vectorTypeNames: [],
+      vectorTypes: [],
+      dimensions: [],
+    };
+
+    currentTable.vectorColumns.push(row.vector_column);
+    currentTable.vectorTypeNames.push(row.vector_type_name);
+    currentTable.vectorTypes.push(row.vector_type);
+    currentTable.dimensions.push(getPgvectorDimensions(row.vector_type));
+    tables.set(key, currentTable);
+  }
+
+  return [...tables.values()];
+}
+
+function getPgvectorDimensions(vectorType: string) {
+  const match = vectorType.match(/\((\d+)\)$/);
+  return match ? Number(match[1]) : null;
+}
+
+function getPgvectorCollectionLabel(schemaName: string, tableName: string) {
+  return schemaName === "public" ? tableName : `${schemaName}.${tableName}`;
+}
+
+async function listPgvectorSampleRows(client: Client, tableInfo: PgvectorTableInfo) {
+  const sql = `SELECT
+      ctid::text AS row_pointer,
+      to_jsonb(sample_row) - $1::text[] AS payload
+    FROM ${quoteIdentifier(tableInfo.schemaName)}.${quoteIdentifier(tableInfo.tableName)} AS sample_row
+    LIMIT $2`;
+
+  const result = await client.query<PgvectorSampleRow>(sql, [
+    tableInfo.vectorColumns,
+    RECORDS_PER_COLLECTION,
+  ]);
+
+  return result.rows;
+}
+
+function createPgvectorPayload(
+  payload: Record<string, unknown>,
+  rowPointer: string,
+  tableInfo: PgvectorTableInfo,
+  vectorColumn: string,
+  vectorType: string,
+  vectorDimensions: number,
+) {
+  return {
+    ...payload,
+    location: toSingleString(payload.location) ?? rowPointer,
+    sourceName:
+      toSingleString(payload.sourceName) ??
+      getPgvectorCollectionLabel(tableInfo.schemaName, tableInfo.tableName),
+    tableSchema: tableInfo.schemaName,
+    tableName: tableInfo.tableName,
+    vectorColumn,
+    vectorType,
+    vectorDimensions: vectorDimensions > 0 ? vectorDimensions : undefined,
+    rowPointer,
+  };
+}
+
+function getPgvectorScope(payload: Record<string, unknown>, schemaName: string) {
+  for (const key of PGVECTOR_SCOPE_KEYS) {
+    const scopeValue = toSingleString(payload[key]);
+    if (scopeValue) {
+      return scopeValue;
+    }
+  }
+
+  return schemaName || "public";
+}
+
+function getPgvectorRecordId(
+  payload: Record<string, unknown>,
+  rowPointer: string,
+  collectionLabel: string,
+  rowNumber: number,
+) {
+  for (const key of PGVECTOR_ID_KEYS) {
+    const recordId = toSingleString(payload[key]);
+    if (recordId) {
+      return recordId;
+    }
+  }
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (/id$/i.test(key)) {
+      const recordId = toSingleString(value);
+      if (recordId) {
+        return recordId;
+      }
+    }
+  }
+
+  return rowPointer || `${collectionLabel}-${rowNumber}`;
+}
+
+function quoteIdentifier(value: string) {
+  return `"${value.replaceAll('"', '""')}"`;
 }
 
 function getWeaviateBaseUrl(databaseUrl: string) {
