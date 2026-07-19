@@ -71,7 +71,9 @@ const server = createServer(async (request, response) => {
     (request.method === "GET" || request.method === "HEAD") &&
     !requestUrl.pathname.startsWith("/api")
   ) {
-    if (await serveFrontendAsset(requestUrl.pathname, request.method, response)) {
+    if (
+      await serveFrontendAsset(requestUrl.pathname, request.method, response)
+    ) {
       return;
     }
   }
@@ -159,7 +161,8 @@ async function serveFrontendAsset(
 }
 
 function resolveAssetPath(pathname: string) {
-  const relativePath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const relativePath =
+    pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const resolvedPath = path.resolve(distDirectory, relativePath);
 
   if (!resolvedPath.startsWith(`${distDirectory}${path.sep}`)) {
